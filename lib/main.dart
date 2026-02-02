@@ -8,6 +8,7 @@ import 'package:multicast_dns/multicast_dns.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:flutter/gestures.dart';
+import 'package:vibration/vibration.dart';
 
 
 const String kServiceType = '_phonepad._tcp.local';
@@ -691,7 +692,32 @@ class HoldButton extends StatelessWidget {
         : Theme.of(context).colorScheme.onSurfaceVariant;
 
     return Listener(
-      onPointerDown: (_) => onPressedChange(true),
+      onPointerDown: (_) {
+        // Try device-level vibration first (vibration package). If unavailable,
+        // fall back to Flutter's HapticFeedback.
+        try {
+          Vibration.hasVibrator().then((has) {
+            if (has == true) {
+              try {
+                Vibration.vibrate(duration: 2);
+              } catch (_) {
+                try {
+                  HapticFeedback.lightImpact();
+                } catch (_) {}
+              }
+            } else {
+              try {
+                HapticFeedback.lightImpact();
+              } catch (_) {}
+            }
+          });
+        } catch (_) {
+          try {
+            HapticFeedback.lightImpact();
+          } catch (_) {}
+        }
+        onPressedChange(true);
+      },
       onPointerUp: (_) => onPressedChange(false),
       onPointerCancel: (_) => onPressedChange(false),
       child: Container(
@@ -840,6 +866,29 @@ class _JoystickState extends State<Joystick> {
       if ((lp - dp).distance <= _moveSlopPx) {
         if (!_stickClicked) {
           setState(() => _stickClicked = true);
+          // 롱프레스가 인정될 때 진동을 줌
+          try {
+            Vibration.hasVibrator().then((has) {
+              if (has == true) {
+                try {
+                  Vibration.vibrate(duration: 3);
+                } catch (_) {
+                  try {
+                    HapticFeedback.lightImpact();
+                  } catch (_) {}
+                }
+              } else {
+                try {
+                  HapticFeedback.lightImpact();
+                } catch (_) {}
+              }
+            });
+          } catch (_) {
+            try {
+              HapticFeedback.lightImpact();
+            } catch (_) {}
+          }
+
           widget.onPress(true); // LS/RS 눌림
         }
       }

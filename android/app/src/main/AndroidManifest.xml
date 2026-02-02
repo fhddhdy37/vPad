@@ -2,6 +2,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Allow vibrating the device for haptic feedback (normally granted at install) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:label="phonepad_flutter"
