@@ -4,49 +4,34 @@ import time
 import websockets
 import vgamepad as vg
 import socket
-from zeroconf import Zeroconf, ServiceInfo
+import platform
+import uuid
+
+from zeroconf import ServiceInfo
 from zeroconf.asyncio import AsyncZeroconf
 
-# gp = vg.VX360Gamepad()
-
 SERVICE_TYPE = "_phonepad._tcp.local."
-SERVICE_NAME = "PhonePad._phonepad._tcp.local."
 
 def get_lan_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # 기본 라우팅 인터페이스의 LAN IP를 얻음 (실제 연결은 안 됨)
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
     finally:
         s.close()
 
-async def register_mdns(ip: str, port: int):
-    azc = AsyncZeroconf()
-    info = ServiceInfo(
-        SERVICE_TYPE,
-        SERVICE_NAME,
-        addresses=[socket.inet_aton(ip)],
-        port=port,
-        properties={},
-    )
-    await azc.async_register_service(info)
-    print(f"[mDNS] {SERVICE_NAME} -> {ip}:{port}")
-    return azc, info
-
-# state = {
-#     "a": False, "b": False, "x": False, "y": False,
-#     "lb": False, "rb": False,
-#     "+": False, "-": False,
-#     "ls": False, "rs": False,
-#     "dpad": "CENTER",
-#     "lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0,
-#     "lt": 0.0, "rt": 0.0,
-#     # 선택: 앱에서 보내면 사용
-#     "zl": False, "zr": False, "home": False, "capture": False,
-# }
-
-last_update = 0.0
+def default_state():
+    return {
+        "a": False, "b": False, "x": False, "y": False,
+        "lb": False, "rb": False,
+        "+": False, "-": False,
+        "ls": False, "rs": False,
+        "dpad": "CENTER",
+        "lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0,
+        "lt": 0.0, "rt": 0.0,
+        "zl": False, "zr": False,
+        "home": False, "capture": False,
+    }
 
 def clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
@@ -81,7 +66,6 @@ def apply_state(gp, s: dict):
     set_btn(gp, bool(s.get("rb")), vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER)
 
     # ----- Start/Back -----
-    # Android에서 +/back으로 보내거나, plus/minus로 보내면 여기서 맞추셔도 됩니다.
     set_btn(gp, bool(s.get("+")), vg.XUSB_BUTTON.XUSB_GAMEPAD_START)
     set_btn(gp, bool(s.get("-")), vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK)
 
@@ -90,7 +74,6 @@ def apply_state(gp, s: dict):
     set_btn(gp, bool(s.get("rs")), vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB)
 
     # ----- D-Pad -----
-    # 먼저 전체 해제 후 필요한 것만 누르기
     gp.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP)
     gp.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN)
     gp.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT)
@@ -112,16 +95,13 @@ def apply_state(gp, s: dict):
     rx = f11(s.get("rx", 0.0))
     ry = f11(s.get("ry", 0.0))
 
-    # vgamepad는 float 기준: -1..1 (y는 보통 위가 +가 되도록 앱에서 이미 뒤집어 보냄)
     gp.left_joystick_float(x_value_float=lx, y_value_float=ly)
     gp.right_joystick_float(x_value_float=rx, y_value_float=ry)
 
     # ----- Triggers -----
-    # 앱에서 lt/rt(0..1) 보내는 걸 우선 사용
     lt = f01(s.get("lt", 0.0))
     rt = f01(s.get("rt", 0.0))
 
-    # 만약 zl/zr를 디지털로만 보내고 lt/rt를 안 보내면, zl/zr로 트리거를 1로 올리기
     if bool(s.get("zl")) and lt == 0.0:
         lt = 1.0
     if bool(s.get("zr")) and rt == 0.0:
@@ -132,21 +112,35 @@ def apply_state(gp, s: dict):
 
     gp.update()
 
-def default_state():
-    return {
-        "a": False, "b": False, "x": False, "y": False,
-        "lb": False, "rb": False,
-        "+": False, "-": False,
-        "ls": False, "rs": False,
-        "dpad": "CENTER",
-        "lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0,
-        "lt": 0.0, "rt": 0.0,
-        "zl": False, "zr": False,
-    }
+async def register_mdns(ip: str, port: int, server_name: str, server_id: str):
+    # 서버마다 고유한 Service Name을 만듭니다.
+    # (동일 네트워크에서 여러 서버가 동시에 광고 가능)
+    instance = f"PhonePad-{server_name}-{server_id}"
+    service_name = f"{instance}.{SERVICE_TYPE}"
 
+    azc = AsyncZeroconf()
+    # TXT 레코드에 OS와 표시명(display) 등 추가로 포함합니다.
+    info = ServiceInfo(
+        SERVICE_TYPE,
+        service_name,
+        addresses=[socket.inet_aton(ip)],
+        port=port,
+        properties={
+            b"name": server_name.encode("utf-8"),
+            b"display": server_name.encode("utf-8"),
+            b"id": server_id.encode("utf-8"),
+            b"ip": ip.encode("utf-8"),
+            b"port": str(port).encode("utf-8"),
+            b"os": platform.system().encode("utf-8"),
+        },
+    )
+    await azc.async_register_service(info)
+    print(f"[mDNS] {service_name} -> {ip}:{port} (name={server_name}, id={server_id}, os={platform.system()})")
+    return azc, info
 
 async def ws_handler(ws):
-    gp = vg.VX360Gamepad()   # ★ 클라이언트마다 컨트롤러 생성
+    # 클라이언트별 컨트롤러/상태 (중요: 여러 클라이언트가 각각 독립)
+    gp = vg.VX360Gamepad()
     state = default_state()
     last_update = time.time()
 
@@ -169,41 +163,35 @@ async def ws_handler(ws):
             if isinstance(data, dict):
                 state.update(data)
                 last_update = time.time()
+                # 디버그(필요 시)
+                # print("RX:", {k: state.get(k) for k in ("a","b","x","y","lb","rb","+","-","dpad","lt","rt","ls","rs")})
                 apply_state(gp, state)
     except Exception as e:
         print("WS ERROR:", e)
     finally:
         wd_task.cancel()
-        gp.reset()
-        gp.update()
+        try:
+            gp.reset()
+            gp.update()
+        except Exception:
+            pass
         print(f"DISCONNECTED: {peer}")
-
-async def watchdog():
-    global last_update, state
-    while True:
-        if last_update and (time.time() - last_update > 0.5):
-            # 입력 끊기면 중립
-            state.update({
-                "a": False, "b": False, "x": False, "y": False,
-                "lb": False, "rb": False,
-                "+": False, "-": False,
-                "ls": False, "rs": False,
-                "dpad": "CENTER",
-                "lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0,
-                "lt": 0.0, "rt": 0.0,
-                "zl": False, "zr": False,
-            })
-            apply_state(state)
-            last_update = 0.0
-        await asyncio.sleep(0.1)
 
 async def main():
     ip = get_lan_ip()
-    azc, info = await register_mdns(ip, 8765)
+    port = 8765
+
+    server_name = platform.node() or "Server"
+    server_id = uuid.uuid4().hex[:6]
+
+    azc, info = await register_mdns(ip, port, server_name, server_id)
+
     try:
-        print("Listening on ws://0.0.0.0:8765")
-        async with websockets.serve(ws_handler, "0.0.0.0", 8765):
-            await watchdog()
+        print(f"Listening on ws://0.0.0.0:{port} (advertised name: {server_name}, id: {server_id})")
+        async with websockets.serve(ws_handler, "0.0.0.0", port):
+            await asyncio.Future()  # run forever
+    except KeyboardInterrupt:
+        print("Interrupted, shutting down...")
     finally:
         try:
             await azc.async_unregister_service(info)

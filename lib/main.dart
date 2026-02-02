@@ -13,6 +13,24 @@ import 'package:flutter/gestures.dart';
 const String kServiceType = '_phonepad._tcp.local';
 const String kTargetNameContains = 'PhonePad';
 
+class DiscoveredService {
+  final String instance;
+  final String display;
+  final String id;
+  final String host;
+  final int port;
+
+  DiscoveredService({
+    required this.instance,
+    required this.display,
+    required this.id,
+    required this.host,
+    required this.port,
+  });
+
+  String get label => '$display ($host:$port)';
+}
+
 @immutable
 class ControllerState {
   final bool a, b, x, y;
@@ -199,6 +217,8 @@ class _ControllerPageState extends State<ControllerPage> {
   StreamSubscription? _discoverySub;
   WebSocketChannel? _ws;
   StreamSubscription? _wsSub;
+  Map<String, DiscoveredService> _services = {};
+  String? _connectedServiceId;
 
   Timer? _sendTimer;
   DateTime _lastSentAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -294,11 +314,31 @@ class _ControllerPageState extends State<ControllerPage> {
 
         if (ips.isEmpty) return;
 
-        // Kotlin은 resolve 후 connectWebSocket(host, port) :contentReference[oaicite:6]{index=6}
+        // PTR 인스턴스 이름 예: PhonePad-MyPC-ab12cd._phonepad._tcp.local.
         final host = ips.first.address;
-        // _setStatus('resolved: $host:$port');
-        _connectWs(host, port);
-        break;
+        // 인스턴스에서 display, id를 추출 (없으면 instance 전체 사용)
+        String display = instance;
+        String id = instance;
+        final reg = RegExp(r'^PhonePad-(.+)-([0-9A-Fa-f]+)\._phonepad\._tcp\.local\.?');
+        final m = reg.firstMatch(instance);
+        if (m != null) {
+          display = m.group(1) ?? instance;
+          id = m.group(2) ?? instance;
+        } else {
+          final i = instance.indexOf('.');
+          if (i > 0) display = instance.substring(0, i);
+        }
+
+        final key = id;
+        setState(() {
+          _services[key] = DiscoveredService(
+            instance: instance,
+            display: display,
+            id: id,
+            host: host,
+            port: port,
+          );
+        });
       }
     });
   }
@@ -314,33 +354,29 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
-  void _connectWs(String host, int port) {
-    if (_ws != null) return; // Kotlin처럼 중복 연결 방지 :contentReference[oaicite:7]{index=7}
+  void _connectWs(String host, int port, {String? serviceId}) {
+    if (_ws != null) return; // 중복 연결 방지
 
     final uri = Uri.parse('ws://$host:$port');
-    // _setStatus('connecting: $uri');
 
     try {
       final channel = WebSocketChannel.connect(uri);
       _ws = channel;
 
+      setState(() => _connectedServiceId = serviceId);
+
       _wsSub = channel.stream.listen(
         (_) {},
         onError: (e) {
-          // _setStatus('failed: $e');
           _closeWs();
-          _startDiscovery(); // 실패 시 다시 탐색 :contentReference[oaicite:8]{index=8}
+          _startDiscovery(); // 실패 시 다시 탐색
         },
         onDone: () {
-          // _setStatus('closed');
           _closeWs();
-          _startDiscovery(); // 종료 시 다시 탐색 :contentReference[oaicite:9]{index=9}
+          _startDiscovery(); // 종료 시 다시 탐색
         },
       );
-
-      // _setStatus('connected');
     } catch (e) {
-      // _setStatus('failed: $e');
       _closeWs();
       _startDiscovery();
     }
@@ -353,6 +389,9 @@ class _ControllerPageState extends State<ControllerPage> {
       _ws?.sink.close(ws_status.goingAway);
     } catch (_) {}
     _ws = null;
+    if (_connectedServiceId != null) {
+      setState(() => _connectedServiceId = null);
+    }
   }
 
   // void _updateState(ControllerState s) => setState(() => _state = s);
@@ -375,12 +414,66 @@ class _ControllerPageState extends State<ControllerPage> {
               //     style: Theme.of(context).textTheme.bodySmall,
               //   ),
               // ),
-              const SizedBox(height: 8),
+              // Controller layout fills available space. Place the Servers button
+              // as an overlay so it doesn't push the controller UI up.
               Expanded(
-                child: SwitchControllerLayout(
-                  state: _state,
-                  apply: _apply,
-                )
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: SwitchControllerLayout(
+                        state: _state,
+                        apply: _apply,
+                      ),
+                    ),
+                    // floating button at bottom center, does not affect layout sizing
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 12,
+                      child: Center(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            showModalBottomSheet<void>(
+                              context: context,
+                              builder: (ctx) {
+                                final services = _services.values.toList();
+                                if (services.isEmpty) {
+                                  return const Padding(
+                                    padding: EdgeInsets.all(16.0),
+                                    child: Text('No servers found'),
+                                  );
+                                }
+                                return ListView.builder(
+                                  itemCount: services.length,
+                                  itemBuilder: (c, i) {
+                                    final s = services[i];
+                                    final isConnected = (_connectedServiceId == s.id);
+                                    return ListTile(
+                                      title: Text(s.display),
+                                      subtitle: Text('${s.host}:${s.port}'),
+                                      trailing: isConnected
+                                          ? const Text('Connected')
+                                          : ElevatedButton(
+                                              onPressed: () {
+                                                Navigator.of(ctx).pop();
+                                                _stopDiscovery();
+                                                _connectWs(s.host, s.port, serviceId: s.id);
+                                              },
+                                              child: const Text('Connect'),
+                                            ),
+                                    );
+                                  },
+                                );
+                              },
+                            );
+                          },
+                          // icon: const Icon(Icons.wifi),
+                          label: Text('Servers (${_services.length})'),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -420,13 +513,13 @@ class SwitchControllerLayout extends StatelessWidget {
 
       final shoulderW = s(140); // 70 * 3
       final shoulderH = s(32);
-      final softGuide = s(10);
+      final softGuide = s(20);
 
       final centerBtnW = s(54);
       final centerBtnH = s(34);
       final centerGap = s(18);
-      final midGap = s(10);
-      final colGap = s(18);
+      final midGap = s(30);
+      final colGap = s(30);
       final betweenCols = s(70);
 
       return Column(
