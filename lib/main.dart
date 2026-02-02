@@ -10,6 +10,43 @@ import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:flutter/gestures.dart';
 import 'package:vibration/vibration.dart';
 
+/// Global vibration configuration used by buttons and joystick long-press.
+class VibConfig {
+  static bool enabled = true;
+  // duration in milliseconds
+  static int duration = 20;
+  // amplitude 1..255 (only if supported)
+  static int amplitude = 128;
+  static bool useAmplitude = false;
+
+  static Future<void> vibrate() async {
+    if (!enabled) return;
+    try {
+      final has = await Vibration.hasVibrator();
+      if (has == true) {
+        if (useAmplitude) {
+          final hasAmp = await Vibration.hasAmplitudeControl();
+          if (hasAmp == true) {
+            try {
+              await Vibration.vibrate(duration: duration, amplitude: amplitude);
+              return;
+            } catch (_) {}
+          }
+        }
+        try {
+          await Vibration.vibrate(duration: duration);
+          return;
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    // fallback to platform haptic
+    try {
+      HapticFeedback.lightImpact();
+    } catch (_) {}
+  }
+}
+
 
 const String kServiceType = '_phonepad._tcp.local';
 const String kTargetNameContains = 'PhonePad';
@@ -432,44 +469,148 @@ class _ControllerPageState extends State<ControllerPage> {
                       right: 0,
                       bottom: 12,
                       child: Center(
-                        child: ElevatedButton.icon(
-                          onPressed: () {
-                            showModalBottomSheet<void>(
-                              context: context,
-                              builder: (ctx) {
-                                final services = _services.values.toList();
-                                if (services.isEmpty) {
-                                  return const Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: Text('No servers found'),
-                                  );
-                                }
-                                return ListView.builder(
-                                  itemCount: services.length,
-                                  itemBuilder: (c, i) {
-                                    final s = services[i];
-                                    final isConnected = (_connectedServiceId == s.id);
-                                    return ListTile(
-                                      title: Text(s.display),
-                                      subtitle: Text('${s.host}:${s.port}'),
-                                      trailing: isConnected
-                                          ? const Text('Connected')
-                                          : ElevatedButton(
-                                              onPressed: () {
-                                                Navigator.of(ctx).pop();
-                                                _stopDiscovery();
-                                                _connectWs(s.host, s.port, serviceId: s.id);
-                                              },
-                                              child: const Text('Connect'),
-                                            ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ElevatedButton.icon(
+                              onPressed: () {
+                                showModalBottomSheet<void>(
+                                  context: context,
+                                  builder: (ctx) {
+                                    final services = _services.values.toList();
+                                    if (services.isEmpty) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(16.0),
+                                        child: Text('No servers found'),
+                                      );
+                                    }
+                                    return ListView.builder(
+                                      itemCount: services.length,
+                                      itemBuilder: (c, i) {
+                                        final s = services[i];
+                                        final isConnected = (_connectedServiceId == s.id);
+                                        return ListTile(
+                                          title: Text(s.display),
+                                          subtitle: Text('${s.host}:${s.port}'),
+                                          trailing: isConnected
+                                              ? const Text('Connected')
+                                              : ElevatedButton(
+                                                  onPressed: () {
+                                                    Navigator.of(ctx).pop();
+                                                    _stopDiscovery();
+                                                    _connectWs(s.host, s.port, serviceId: s.id);
+                                                  },
+                                                  child: const Text('Connect'),
+                                                ),
+                                        );
+                                      },
                                     );
                                   },
                                 );
                               },
-                            );
-                          },
-                          // icon: const Icon(Icons.wifi),
-                          label: Text('Servers (${_services.length})'),
+                              icon: const Icon(Icons.wifi),
+                              label: Text(
+                                _connectedServiceId != null
+                                    ? (_services[_connectedServiceId!]?.display ?? 'Connected')
+                                    : 'Servers (${_services.length})',
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(Icons.settings),
+                              onPressed: () {
+                                showModalBottomSheet<void>(
+                                  context: context,
+                                  builder: (ctx) {
+                                    return StatefulBuilder(builder: (ctx, setModalState) {
+                                      return Padding(
+                                        padding: const EdgeInsets.all(16.0),
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            SwitchListTile(
+                                              title: const Text('Enable vibration'),
+                                              value: VibConfig.enabled,
+                                              onChanged: (v) {
+                                                VibConfig.enabled = v;
+                                                setModalState(() {});
+                                              },
+                                            ),
+                                            Row(
+                                              children: [
+                                                const Text('Duration (ms)'),
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Slider(
+                                                    min: 1,
+                                                    max: 200,
+                                                    divisions: 199,
+                                                    value: VibConfig.duration.toDouble(),
+                                                    label: '${VibConfig.duration}ms',
+                                                    onChanged: (d) {
+                                                      VibConfig.duration = d.toInt();
+                                                      setModalState(() {});
+                                                    },
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            // FutureBuilder<bool?>(
+                                            //   future: Vibration.hasAmplitudeControl(),
+                                            //   builder: (context, snap) {
+                                            //     final hasAmp = snap.data == true;
+                                            //     if (!hasAmp) {
+                                            //       return const SizedBox.shrink();
+                                            //     }
+                                            //     return Column(
+                                            //       children: [
+                                            //         SwitchListTile(
+                                            //           title: const Text('Use amplitude control'),
+                                            //           value: VibConfig.useAmplitude,
+                                            //           onChanged: (v) {
+                                            //             VibConfig.useAmplitude = v;
+                                            //             setModalState(() {});
+                                            //           },
+                                            //         ),
+                                            //         Row(
+                                            //           children: [
+                                            //             const Text('Amplitude'),
+                                            //             const SizedBox(width: 12),
+                                            //             Expanded(
+                                            //               child: Slider(
+                                            //                 min: 1,
+                                            //                 max: 255,
+                                            //                 divisions: 254,
+                                            //                 value: VibConfig.amplitude.toDouble(),
+                                            //                 label: '${VibConfig.amplitude}',
+                                            //                 onChanged: VibConfig.useAmplitude
+                                            //                     ? (d) {
+                                            //                         VibConfig.amplitude = d.toInt();
+                                            //                         setModalState(() {});
+                                            //                       }
+                                            //                     : null,
+                                            //               ),
+                                            //             ),
+                                            //           ],
+                                            //         ),
+                                            //       ],
+                                            //     );
+                                            //   },
+                                            // ),
+                                            const SizedBox(height: 8),
+                                            ElevatedButton(
+                                              onPressed: () => Navigator.of(ctx).pop(),
+                                              child: const Text('Close'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    });
+                                  },
+                                );
+                              },
+                            ),
+                          ],
                         ),
                       ),
                     ),
@@ -693,29 +834,8 @@ class HoldButton extends StatelessWidget {
 
     return Listener(
       onPointerDown: (_) {
-        // Try device-level vibration first (vibration package). If unavailable,
-        // fall back to Flutter's HapticFeedback.
-        try {
-          Vibration.hasVibrator().then((has) {
-            if (has == true) {
-              try {
-                Vibration.vibrate(duration: 2);
-              } catch (_) {
-                try {
-                  HapticFeedback.lightImpact();
-                } catch (_) {}
-              }
-            } else {
-              try {
-                HapticFeedback.lightImpact();
-              } catch (_) {}
-            }
-          });
-        } catch (_) {
-          try {
-            HapticFeedback.lightImpact();
-          } catch (_) {}
-        }
+        // Use centralized vibration configuration
+        VibConfig.vibrate();
         onPressedChange(true);
       },
       onPointerUp: (_) => onPressedChange(false),
@@ -866,28 +986,8 @@ class _JoystickState extends State<Joystick> {
       if ((lp - dp).distance <= _moveSlopPx) {
         if (!_stickClicked) {
           setState(() => _stickClicked = true);
-          // 롱프레스가 인정될 때 진동을 줌
-          try {
-            Vibration.hasVibrator().then((has) {
-              if (has == true) {
-                try {
-                  Vibration.vibrate(duration: 3);
-                } catch (_) {
-                  try {
-                    HapticFeedback.lightImpact();
-                  } catch (_) {}
-                }
-              } else {
-                try {
-                  HapticFeedback.lightImpact();
-                } catch (_) {}
-              }
-            });
-          } catch (_) {
-            try {
-              HapticFeedback.lightImpact();
-            } catch (_) {}
-          }
+          // 롱프레스 인식 시 중앙 설정에 따라 진동
+          VibConfig.vibrate();
 
           widget.onPress(true); // LS/RS 눌림
         }
