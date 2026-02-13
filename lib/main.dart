@@ -9,12 +9,13 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import 'package:flutter/gestures.dart';
 import 'package:vibration/vibration.dart';
+import 'package:shake/shake.dart';
 
 /// Global vibration configuration used by buttons and joystick long-press.
 class VibConfig {
   static bool enabled = true;
   // duration in milliseconds
-  static int duration = 20;
+  static int duration = 1;
   // amplitude 1..255 (only if supported)
   static int amplitude = 128;
   static bool useAmplitude = false;
@@ -261,27 +262,69 @@ class _ControllerPageState extends State<ControllerPage> {
   Timer? _sendTimer;
   DateTime _lastSentAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  @override
-  void initState() {
-  super.initState();
-  _startDiscovery();
+  // ---- Shake (OS-level) ----
+  ShakeDetector? _shakeDetector;
+  int _shakeSeq = 0;
+  DateTime _lastShakeSentAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  _sendTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
-    if (_ws == null) return;
+  // 너무 민감하면 중복 이벤트를 줄이기 위한 쿨다운(ms)
+  static const int _shakeCooldownMs = 250;
+
+  void _sendShakeOnly(ShakeEvent event) {
+    final ws = _ws;
+    if (ws == null) return;
 
     final now = DateTime.now();
-    final shouldHeartbeat =
-        now.difference(_lastSentAt) >= const Duration(milliseconds: 150); // 0.5s보다 짧게
+    if (now.difference(_lastShakeSentAt).inMilliseconds < _shakeCooldownMs) return;
+    _lastShakeSentAt = now;
 
-    final changed = (_lastSent != _state);
+    _shakeSeq += 1;
 
-    if (changed || shouldHeartbeat) {
-      _ws!.sink.add(jsonEncode(_state.toJson()));
-      _lastSent = _state;
-      _lastSentAt = now;
-    }
-  });
-}
+    // 필요 최소만 전송
+    ws.sink.add(jsonEncode({"shake": _shakeSeq}));
+
+    // 옵션: event 정보를 같이 보내고 싶으면 아래처럼 확장 가능
+    // ws.sink.add(jsonEncode({
+    //   "shake": _shakeSeq,
+    //   "shake_count": event.shakeCount,
+    // }));
+
+    VibConfig.vibrate();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _startDiscovery();
+    _shakeDetector = ShakeDetector.autoStart(
+      // 숫자가 작을수록 민감(약하게 흔들어도 감지)
+      shakeThresholdGravity: 1.6,      // 기본보다 낮추기 (예: 2.7 → 1.6)
+      // 연속 흔들림 최소 횟수(작을수록 민감)
+      minimumShakeCount: 1,
+      // 흔들림 사이 시간(너무 짧으면 오탐↑)
+      shakeSlopTimeMS: 100,
+      // 흔들림 이후 쿨다운(연속 트리거 방지)
+      shakeCountResetTime: 100,
+      onPhoneShake: _sendShakeOnly,
+    );
+
+
+    _sendTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+      if (_ws == null) return;
+
+      final now = DateTime.now();
+      final shouldHeartbeat =
+          now.difference(_lastSentAt) >= const Duration(milliseconds: 150); // 0.5s보다 짧게
+
+      final changed = (_lastSent != _state);
+
+      if (changed || shouldHeartbeat) {
+        _ws!.sink.add(jsonEncode(_state.toJson()));
+        _lastSent = _state;
+        _lastSentAt = now;
+      }
+    });
+  }
   // void initState() {
   //   super.initState();
   //   _startDiscovery();
@@ -301,6 +344,7 @@ class _ControllerPageState extends State<ControllerPage> {
     _stopDiscovery();
     _closeWs();
     super.dispose();
+    _shakeDetector?.stopListening();
   }
 
   // void _setStatus(String s) {

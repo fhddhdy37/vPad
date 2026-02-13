@@ -31,6 +31,7 @@ def default_state():
         "lt": 0.0, "rt": 0.0,
         "zl": False, "zr": False,
         "home": False, "capture": False,
+        "shake": 0,
     }
 
 def clamp(v, lo, hi):
@@ -143,6 +144,7 @@ async def ws_handler(ws):
     gp = vg.VX360Gamepad()
     state = default_state()
     last_update = time.time()
+    last_shake = 0
 
     peer = ws.remote_address
     print(f"CONNECTED: {peer} -> new controller")
@@ -162,9 +164,18 @@ async def ws_handler(ws):
             data = json.loads(msg)
             if isinstance(data, dict):
                 state.update(data)
+                # ---- Shake event ----
+                try:
+                    shake = int(state.get("shake", 0))
+                except:
+                    shake = 0
+
+                if shake > last_shake:
+                    print(f"[SHAKE] {peer} seq={shake}")
+                    last_shake = shake
                 last_update = time.time()
                 # 디버그(필요 시)
-                # print("RX:", {k: state.get(k) for k in ("a","b","x","y","lb","rb","+","-","dpad","lt","rt","ls","rs")})
+                # print("RX:", {k: state.get(k) for k in ("a","b","x","y","lb","rb","+","-","dpad","lt","rt","ls","rs","shake")})
                 apply_state(gp, state)
     except Exception as e:
         print("WS ERROR:", e)
