@@ -476,6 +476,37 @@ class _ControllerPageState extends State<ControllerPage> {
     }
   }
 
+  ({String host, int port})? _parseHostPort(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+
+    // allow: ws://1.2.3.4:8765
+    s = s.replaceFirst(RegExp(r'^ws://', caseSensitive: false), '');
+
+    // drop path if any: 1.2.3.4:8765/xxx
+    final slash = s.indexOf('/');
+    if (slash >= 0) s = s.substring(0, slash);
+
+    String host = s;
+    int port = 8765;
+
+    // host:port (IPv4)
+    final lastColon = s.lastIndexOf(':');
+    if (lastColon > 0 && lastColon < s.length - 1) {
+      final maybePort = int.tryParse(s.substring(lastColon + 1));
+      if (maybePort != null) {
+        host = s.substring(0, lastColon);
+        port = maybePort;
+      }
+    }
+
+    host = host.trim();
+    if (host.isEmpty) return null;
+    if (port <= 0 || port > 65535) return null;
+
+    return (host: host, port: port);
+  }
+
   // void _updateState(ControllerState s) => setState(() => _state = s);
 
   @override
@@ -520,32 +551,110 @@ class _ControllerPageState extends State<ControllerPage> {
                               onPressed: () {
                                 showModalBottomSheet<void>(
                                   context: context,
+                                  isScrollControlled: true,
                                   builder: (ctx) {
-                                    final services = _services.values.toList();
-                                    if (services.isEmpty) {
-                                      return const Padding(
-                                        padding: EdgeInsets.all(16.0),
-                                        child: Text('No servers found'),
-                                      );
-                                    }
-                                    return ListView.builder(
-                                      itemCount: services.length,
-                                      itemBuilder: (c, i) {
-                                        final s = services[i];
-                                        final isConnected = (_connectedServiceId == s.id);
-                                        return ListTile(
-                                          title: Text(s.display),
-                                          subtitle: Text('${s.host}:${s.port}'),
-                                          trailing: isConnected
-                                              ? const Text('Connected')
-                                              : ElevatedButton(
-                                                  onPressed: () {
-                                                    Navigator.of(ctx).pop();
-                                                    _stopDiscovery();
-                                                    _connectWs(s.host, s.port, serviceId: s.id);
-                                                  },
-                                                  child: const Text('Connect'),
-                                                ),
+                                    final ipCtrl = TextEditingController();
+                                    String? err;
+
+                                    return StatefulBuilder(
+                                      builder: (ctx, setModalState) {
+                                        final services = _services.values.toList();
+
+                                        void connectManual() {
+                                          final parsed = _parseHostPort(ipCtrl.text);
+                                          if (parsed == null) {
+                                            setModalState(() => err = 'IP 또는 IP:PORT 형식으로 입력해주세요. (예: 192.168.0.10 또는 192.168.0.10:8765)');
+                                            return;
+                                          }
+                                          final host = parsed.host;
+                                          final port = parsed.port;
+
+                                          // 수동 연결도 기존 서버 리스트와 동일한 표시 스타일로 유지하기 위해 _services에 추가
+                                          final manualId = 'manual-$host-$port';
+                                          setState(() {
+                                            _services[manualId] = DiscoveredService(
+                                              instance: manualId,
+                                              display: host, // title(Text) 스타일 동일
+                                              id: manualId,
+                                              host: host,
+                                              port: port,
+                                            );
+                                          });
+
+                                          Navigator.of(ctx).pop();
+                                          _stopDiscovery();
+                                          _connectWs(host, port, serviceId: manualId);
+                                        }
+
+                                        return SafeArea(
+                                          child: Padding(
+                                            padding: EdgeInsets.only(
+                                              left: 16,
+                                              right: 16,
+                                              top: 16,
+                                              bottom: 16 + MediaQuery.of(ctx).viewInsets.bottom,
+                                            ),
+                                            child: SizedBox(
+                                              height: MediaQuery.of(ctx).size.height * 0.6,
+                                              child: ListView(
+                                                children: [
+                                                  // ---- Manual IP input ----
+                                                  Row(
+                                                    children: [
+                                                      Expanded(
+                                                        child: TextField(
+                                                          controller: ipCtrl,
+                                                          keyboardType: TextInputType.url,
+                                                          decoration: InputDecoration(
+                                                            labelText: 'Server IP (or IP:PORT)',
+                                                            hintText: '예: 192.168.0.10 또는 192.168.0.10:8765',
+                                                            errorText: err,
+                                                          ),
+                                                          onChanged: (_) {
+                                                            if (err != null) setModalState(() => err = null);
+                                                          },
+                                                          onSubmitted: (_) => connectManual(),
+                                                        ),
+                                                      ),
+                                                      const SizedBox(width: 12),
+                                                      ElevatedButton(
+                                                        onPressed: connectManual,
+                                                        child: const Text('Connect'),
+                                                      ),
+                                                    ],
+                                                  ),
+
+                                                  const SizedBox(height: 12),
+                                                  const Divider(),
+
+                                                  // ---- Discovered servers (existing style 유지) ----
+                                                  if (services.isEmpty)
+                                                    const Padding(
+                                                      padding: EdgeInsets.only(top: 8.0),
+                                                      child: Text('No servers found'),
+                                                    )
+                                                  else
+                                                    ...services.map((s) {
+                                                      final isConnected = (_connectedServiceId == s.id);
+                                                      return ListTile(
+                                                        title: Text(s.display),
+                                                        subtitle: Text('${s.host}:${s.port}'),
+                                                        trailing: isConnected
+                                                            ? const Text('Connected')
+                                                            : ElevatedButton(
+                                                                onPressed: () {
+                                                                  Navigator.of(ctx).pop();
+                                                                  _stopDiscovery();
+                                                                  _connectWs(s.host, s.port, serviceId: s.id);
+                                                                },
+                                                                child: const Text('Connect'),
+                                                              ),
+                                                      );
+                                                    }),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
                                         );
                                       },
                                     );
